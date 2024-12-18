@@ -6,7 +6,31 @@ import { Precise } from './base/Precise.js';
 import { TICK_SIZE } from './base/functions/number.js';
 import { sha256 } from './static_dependencies/noble-hashes/sha256.js';
 import { NotSupported, ArgumentsRequired, BadRequest, AuthenticationError, InvalidOrder, ExchangeError } from './base/errors.js';
-import type { Dict, int, Num, Strings, Int, Str, Market, OrderType, OrderSide, Order, Ticker, Tickers, OHLCV, Trade, OrderBook, FundingRate, Balances, Position, LedgerEntry, Currency, Transaction, Leverage, Currencies } from './base/types.js';
+import type {
+    Dict,
+    int,
+    Num,
+    Strings,
+    Int,
+    Str,
+    Market,
+    OrderType,
+    OrderSide,
+    Order,
+    Ticker,
+    Tickers,
+    OHLCV,
+    Trade,
+    OrderBook,
+    FundingRate,
+    Balances,
+    Position,
+    LedgerEntry,
+    Currency,
+    Transaction,
+    Leverage,
+    Currencies, Dictionary,
+} from './base/types.js';
 
 // ---------------------------------------------------------------------------
 
@@ -175,7 +199,7 @@ export default class bullish extends Exchange {
                 },
             },
             'options': {
-                'sandboxMode': true,
+                'sandboxMode': false,
             },
             'commonCurrencies': {},
             'exceptions': {
@@ -365,6 +389,18 @@ export default class bullish extends Exchange {
         return this.parseTicker (response, market);
     }
 
+    normaliseLimit (limit: Int): Int {
+        if (limit <= 5) {
+            return 5;
+        } else if (limit <= 25) {
+            return 25;
+        } else if (limit <= 50) {
+            return 50;
+        } else {
+            return 100;
+        }
+    }
+
     /**
      * @method
      * @name bingx#fetchOrderBook
@@ -411,6 +447,19 @@ export default class bullish extends Exchange {
         }, market);
     }
 
+    extractUrlParams (url: string): Dictionary<string> {
+        const params = {};
+        const queryString = url.split ('?')[1];
+        if (queryString !== undefined) {
+            const queryStringParams = queryString.split ('&');
+            for (let i = 0; i < queryStringParams.length; i += 1) {
+                const keyValue = queryStringParams[i].split ('=');
+                params[keyValue[0]] = keyValue[1];
+            }
+        }
+        return params;
+    }
+
     /**
      * @method
      * @name bingx#fetchTrades
@@ -425,17 +474,33 @@ export default class bullish extends Exchange {
      */
     async fetchTrades (symbol: string, since: Int = undefined, limit: Int = undefined, params = {}): Promise<Trade[]> {
         await this.loadMarkets ();
+        let paginate: boolean;
+        [ paginate, params ] = this.handleOptionAndParams (params, 'fetchTrades', 'paginate');
+        if (paginate) {
+            // Can only seem to work backwards
+            return await this.fetchPaginatedCallCursor ('fetchTrades', symbol, since, limit, params, '_nextPage', '_nextPage', undefined, 100) as Trade[];
+        }
         const market = this.market (symbol);
-        const request: Dict = {
+        let request: Dict = {
             'symbol': market['info']['symbol'],
+            'createdAtDatetime[gte]': this.iso8601 (since),
+            '_metaData': true,
         };
         if (limit !== undefined) {
-            // Limit should be 5, 10, 25, 50, 100
-            // 5, 25, 50, 100 - default is 25
-            request['_pageSize'] = Math.min (limit, 100);
+            request['_pageSize'] = this.normaliseLimit (limit);
         }
+        [ request, params ] = this.handleUntilOption ('createdAtDatetime[lte]', request, params);
         const response = await this.publicV1GetHistoryMarketsSymbolTrades (this.extend (request, params));
-        return this.parseTrades (response, market, since, limit);
+        const tradeArray = this.safeList (response, 'data');
+        const links = this.safeDict (response, 'links');
+        const nextUrl = this.safeString (links, 'next');
+        if (nextUrl !== undefined && paginate) {
+            const nextUrlParams = this.extractUrlParams (nextUrl);
+            for (let i = 0; i < tradeArray.length; i++) {
+                tradeArray[i]['_nextPage'] = nextUrlParams['_nextPage'];
+            }
+        }
+        return this.parseTrades (tradeArray, market, since, limit);
     }
 
     parseOHLCV (ohlcv, market: Market = undefined): OHLCV {
