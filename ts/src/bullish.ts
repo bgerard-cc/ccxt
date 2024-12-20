@@ -530,23 +530,37 @@ export default class bullish extends Exchange {
      */
     async fetchOHLCV (symbol: string, timeframe = '1m', since: Int = undefined, limit: Int = 100, params = {}): Promise<OHLCV[]> {
         await this.loadMarkets ();
-        const market = this.market (symbol);
-        if (limit === undefined) {
-            limit = 10000;
-        } else {
-            limit = Math.min (limit, 10000);
+        let paginate = false;
+        [ paginate, params ] = this.handleOptionAndParams (params, 'fetchOHLCV', 'paginate', false);
+        if (paginate) {
+            return await this.fetchPaginatedCallDeterministic ('fetchOHLCV', symbol, since, limit, timeframe, params, 100) as OHLCV[];
         }
+        const market = this.market (symbol);
         const request: Dict = {
             'symbol': market['info']['symbol'],
             'timeBucket': this.safeString (this.timeframes, timeframe, timeframe),
+            '_pageSize': this.normaliseLimit (limit),
         };
-        const sinceTs = since !== undefined ? since : this.milliseconds () - 3600000;
-        request['createdAtDatetime[gte]'] = this.iso8601 (sinceTs);
-        request['createdAtDatetime[lte]'] = params['until'] !== undefined ? this.iso8601 (params['until']) : this.iso8601 (this.milliseconds ());
-        if (limit !== undefined) {
-            // Limit should be 5, 10, 25, 50, 100
-            // 5, 25, 50, 100 - default is 25
-            request['_pageSize'] = Math.min (limit, 100);
+        const now = this.milliseconds ();
+        const duration = this.parseTimeframe (timeframe);
+        const until = this.safeInteger2 (params, 'until', 'till', now);
+        if (since !== undefined) {
+            request['createdAtDatetime[gte]'] = this.iso8601 (since);
+            if (limit !== undefined) {
+                const endTs = this.sum (since, duration * (limit + 1) * 1000) - 1;
+                request['createdAtDatetime[lte]'] = this.iso8601 (endTs);
+            } else {
+                request['createdAtDatetime[lte]'] = this.iso8601 (until);
+            }
+        } else {
+            request['createdAtDatetime[lte]'] = this.iso8601 (until);
+            if (limit !== undefined) {
+                const startTs = until - duration * (limit + 1) * 1000 + 1;
+                request['createdAtDatetime[gte]'] = this.iso8601 (startTs);
+            } else {
+                const startTs = until - duration * 101 * 1000 + 1;
+                request['createdAtDatetime[gte]'] = this.iso8601 (startTs);
+            }
         }
         const response = await this.publicV1GetMarketsSymbolCandle (this.extend (request, params));
         return this.parseOHLCVs (response, market, timeframe, since, limit);
